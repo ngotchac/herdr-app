@@ -33,11 +33,27 @@ const MAX_REPORTED_MISSING_ASSETS: usize = 256;
 #[derive(Clone, Debug)]
 pub struct AppAssets {
     root: PathBuf,
+    follow_links: bool,
 }
 
 impl AppAssets {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, follow_links: false }
+    }
+
+    /// HERDR: also serves a file that a link inside the directory points outside it
+    /// (dotfiles, Nix and Home Manager link the user's files in). For a host
+    /// whose scripts already have more than that, such as running programs, the
+    /// refusal protects nothing and breaks those setups. `..` stays refused.
+    pub fn following_links(mut self) -> Self {
+        self.follow_links = true;
+        self
+    }
+
+    /// The handle refused because a link leads out of the directory: with
+    /// `follow_links`, the plain path, which the lexical pass kept inside it.
+    fn escaped(&self, error: &std::io::Error, resolved: &std::path::Path) -> Option<PathBuf> {
+        (self.follow_links && error.kind() == std::io::ErrorKind::PermissionDenied).then(|| self.root.join(resolved))
     }
 
     pub fn root(&self) -> &PathBuf {
@@ -89,7 +105,14 @@ impl AssetSource for AppAssets {
             anyhow::bail!("`{path}` is outside the application directory");
         };
 
-        match dir.open(&resolved) {
+        let opened = match dir.open(&resolved) {
+            Err(error) => match self.escaped(&error, &resolved) {
+                Some(path) => std::fs::File::open(path).map(cap_std::fs::File::from_std),
+                None => Err(error),
+            },
+            ok => ok,
+        };
+        match opened {
             Ok(mut file) => {
                 use std::io::Read as _;
 
@@ -128,13 +151,15 @@ impl AssetSource for AppAssets {
 
         let mut names = Vec::new();
         let mut name_bytes = 0;
-        let listing = match dir.read_dir(&resolved) {
-            Ok(listing) => listing,
+        let listing: Vec<String> = match dir.read_dir(&resolved) {
+            Ok(listing) => listing.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned())).collect::<Result<_, _>>()?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
+            Err(error) => match self.escaped(&error, &resolved) {
+                Some(path) => std::fs::read_dir(path)?.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned())).collect::<Result<_, _>>()?,
+                None => return Err(error.into()),
+            },
         };
-        for entry in listing {
-            let name = entry?.file_name().to_string_lossy().into_owned();
+        for name in listing {
             name_bytes += name.len();
             check_asset_list_budget(names.len(), name_bytes)
                 .map_err(|error| anyhow::anyhow!("asset list `{path}` {error}"))?;
@@ -301,6 +326,29 @@ mod tests {
             b"real"
         );
         assert!(assets.resolve("../outside/secret.svg").is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn following_links_serves_a_linked_folder_but_not_traversal() {
+        let base = sandbox("following");
+        let root = base.join("app");
+        let outside = base.join("dotfiles");
+        std::fs::create_dir_all(&outside).expect("somewhere outside");
+        std::fs::write(outside.join("check.svg"), b"check").expect("an icon");
+        std::fs::write(base.join("secret.svg"), b"secret").expect("a secret");
+        std::os::unix::fs::symlink(&outside, root.join("icons")).expect("a linked folder");
+        std::os::unix::fs::symlink(outside.join("check.svg"), root.join("one.svg")).expect("a linked file");
+
+        let assets = AppAssets::new(root).following_links();
+
+        let read = |path: &str| assets.load(path).expect("loads").expect("its bytes").into_owned();
+        assert_eq!(read("icons/check.svg"), b"check");
+        assert_eq!(read("one.svg"), b"check");
+        assert_eq!(assets.list("icons").expect("lists"), vec![SharedString::from("check.svg")]);
+        assert!(assets.load("../secret.svg").is_err(), "`..` still leaves the directory");
 
         let _ = std::fs::remove_dir_all(&base);
     }
