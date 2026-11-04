@@ -213,7 +213,7 @@ fn missing_mods(name: &str) -> Vec<String> {
     fn walk(v: &Value, out: &mut Vec<String>) {
         match v {
             Value::Object(o) => o.iter().for_each(|(k, v)| match v {
-                Value::String(s) if k == "mod" => out.push(s.clone()),
+                Value::String(s) if k == "mod" || (k == "empty" && o.contains_key("tab")) => out.push(s.clone()),
                 _ => walk(v, out),
             }),
             Value::Array(a) => a.iter().for_each(|v| walk(v, out)),
@@ -1166,6 +1166,9 @@ impl AppWindow {
         let visit = |n: &Node, terms: &mut Vec<(String, String)>, mods: &mut Vec<(String, Instance)>| match n.content() {
             Some(Content::Terminal { terminal }) => terms.push((n.id.clone(), terminal.clone())),
             Some(Content::Mod { name, props }) => mods.push((n.id.clone(), Instance { name: name.clone(), props: props.clone() })),
+            Some(Content::Context { empty: Some(name), .. }) if self.model.active_tab().is_none() => {
+                mods.push((format!("{}#empty", n.id), Instance { name: name.clone(), props: Value::Null }));
+            }
             _ => {}
         };
         let stacks = |root: &Node, mods: &mut Vec<(String, Instance)>| {
@@ -1238,6 +1241,9 @@ impl AppWindow {
         for n in self.chrome.walk() {
             if let Some(Content::Mod { name, props }) = n.content() {
                 out.insert(n.id.clone(), inst(name, props));
+            }
+            if let Some(Content::Context { empty: Some(name), .. }) = n.content() {
+                out.insert(format!("{}#empty", n.id), inst(name, &Value::Null));
             }
             if let Kind::Stack { header: Some(h), .. } = &n.kind
                 && let HeaderContent::Mod { name, props } = &h.content
@@ -1391,6 +1397,10 @@ impl AppWindow {
     /// Creates what's visible, drops what isn't, publishes state, saves, focuses.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.model.order_spaces();
+        self.model.close_to_none = self.chrome.walk().iter().any(|n| matches!(n.content(), Some(Content::Context { empty: Some(_), .. })));
+        if !self.model.close_to_none && self.model.active.is_none() {
+            self.model.active = self.model.spaces.first().map(|s| s.id.clone());
+        }
         let (model, live) = (&self.model, &self.live);
         self.swapped.retain(|p, a| model.address_of(p).is_some() && live.contains_key(a));
         let (mut terms, mods_visible) = self.visible();
@@ -2933,7 +2943,9 @@ impl AppWindow {
             }
             "space.next" | "space.prev" => {
                 let n = self.model.spaces.len();
-                if let Some(i) = self.model.active_index().filter(|_| n > 0) {
+                if n > 0 {
+                    // With no space shown, next shows the first and prev the last.
+                    let i = self.model.active_index().unwrap_or(if name == "space.next" { n - 1 } else { 0 });
                     let j = if name == "space.next" { (i + 1) % n } else { (i + n - 1) % n };
                     self.model.active = Some(self.model.spaces[j].id.clone());
                 }
@@ -3969,7 +3981,7 @@ impl AppWindow {
             }
             self.seen.insert(f.id.clone());
             write_atomic(&file("seen.json"), &serde_json::to_string(&self.seen).unwrap_or_default());
-            let shown = self.chrome.walk().iter().any(|n| matches!(n.content(), Some(Content::Mod { name, .. }) if *name == f.id));
+            let shown = self.chrome.walk().iter().any(|n| matches!(n.content(), Some(Content::Mod { name, .. } | Content::Context { empty: Some(name), .. }) if *name == f.id));
             let place = f.hint.place.as_deref().unwrap_or("right");
             if !shown && place != "none" && !shipped_layouts().contains(&self.layout_name.as_str()) {
                 let mut block = Node::block(self.model.fresh_id("b"), Content::Mod { name: f.id.clone(), props: Value::Null });
@@ -4151,9 +4163,10 @@ impl AppWindow {
                     .child("no agents yet. start claude, codex or pi in a terminal")
                     .into_any_element(),
             },
-            Content::Context { .. } => match self.model.active_tab() {
+            Content::Context { empty, .. } => match self.model.active_tab() {
                 Some(c) => self.render_node(c.shown(), focused, self.pane_frame(), cx),
                 None if self.documents.get("").is_some_and(|s| s.layout() == "loading") => div().size_full().into_any_element(),
+                None if empty.is_some() => self.render_slot(&format!("{}#empty", n.id), cx),
                 None => {
                     let key = crate::keys::listing().into_iter().find(|(_, _, a)| a == "space.new").map(|(_, k, _)| format!(" ({k})"));
                     div()
@@ -5781,6 +5794,52 @@ mod tests {
             this.run("tab.rename", json!({}), window, cx);
             assert_eq!(prompts(this), 1, "and a third opens it again");
         }));
+    }
+
+    #[test]
+    fn closing_the_shown_space_shows_the_empty_page() {
+        in_own_process("empty_page");
+    }
+
+    /// A tab block with an `empty` page: closing the shown space shows the page
+    /// in the same update, never the next space, and showing a space leaves it.
+    #[gpui::test]
+    fn empty_page(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("empty_page") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "home", "import { View, div } from \"gpui-kit\"; export default class H extends View { render() { return div(); } }",
+            json!({ "id": "main", "type": "block", "content": { "tab": "active", "empty": "home" } }));
+        let shown = |cx: &mut gpui::VisualTestContext| cx.update(|_, cx| {
+            let this = view.read(cx);
+            let (terms, mods) = this.visible();
+            (this.model.active.clone(), terms.into_iter().map(|(_, a)| a).collect::<Vec<_>>(), mods.into_iter().map(|(s, _)| s).collect::<Vec<_>>())
+        });
+        let run = |name: &str, args: serde_json::Value, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.dispatch(name, &args, true, window, cx)));
+        };
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
+            this.model.add_space("sp2", "", "/tmp", crate::model::Tab::new("tb2", "", "p2", "t2"));
+            this.model.active = Some("sp1".into());
+            this.sync(window, cx);
+        }));
+        assert_eq!(shown(cx), (Some("sp1".into()), vec!["t1".into()], vec![]));
+        // Checked before any draw: sp2 is never shown, so never marked seen.
+        run("space.close", json!({ "id": "sp1", "confirmed": true }), cx);
+        assert_eq!(shown(cx), (None, vec![], vec!["main#empty".into()]));
+        run("space.next", serde_json::Value::Null, cx);
+        assert_eq!(shown(cx), (Some("sp2".into()), vec!["t2".into()], vec![]));
+        // A layout without a page shows a space again.
+        let active = cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.active = None;
+            this.chrome = super::default_layout("main");
+            this.sync(window, cx);
+            this.model.active.clone()
+        }));
+        assert_eq!(active.as_deref(), Some("sp2"));
+        cx.run_until_parked();
     }
 
     #[test]

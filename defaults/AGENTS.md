@@ -223,7 +223,9 @@ A layout is a tree of nodes. Four types:
 
 - `block`: shows content. `"content"` is `{ "mod": "<folder>", "props": {...} }`,
   `{ "terminal": "t7" }`, `{ "tab": "active" }` (the shown tab's
-  terminals as it arranges them), or `{ "agent": "focused" }` (one agent's
+  terminals as it arranges them; `"empty": "<folder>"` names a mod shown
+  while no space is selected, and closing the shown space then selects
+  none instead of the next one), or `{ "agent": "focused" }` (one agent's
   terminal, full size: the one chosen with `agent.focus` / `agent.next`, else
   the focused pane's agent, else the first agent).
 - `row` / `column`: children side by side / stacked.
