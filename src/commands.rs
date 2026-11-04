@@ -49,6 +49,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("terminal.kill", &[req("terminal")], "End a terminal and its sub-agents."),
     // What you see.
     cmd("space.select", &[opt("index"), opt("id")], "Show a space (by position or id)."),
+    cmd("space.deselect", &[], "Show the layout's `empty` page."),
     cmd("space.next", &[], "Show the next space."),
     cmd("space.prev", &[], "Show the previous space."),
     cmd("tab.select", &[opt("index"), opt("id")], "Show a tab (by position in the space, or id)."),

@@ -2890,6 +2890,8 @@ impl AppWindow {
                     None => return self.fail("no such space"),
                 }
             }
+            "space.deselect" if !self.model.close_to_none => return self.fail("the layout has no `empty` page"),
+            "space.deselect" => self.model.active = None,
             "space.next" | "space.prev" => {
                 let n = self.model.spaces.len();
                 if n > 0 {
@@ -5435,6 +5437,7 @@ mod tests {
         cx.update(|window, cx| view.update(cx, |this, cx| {
             this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
             this.model.add_space("sp2", "", "/tmp", crate::model::Tab::new("tb2", "", "p2", "t2"));
+            this.model.add_space("sp3", "", "/tmp", crate::model::Tab::new("tb3", "", "p3", "t3"));
             this.model.active = Some("sp1".into());
             this.sync(window, cx);
         }));
@@ -5444,6 +5447,10 @@ mod tests {
         assert_eq!(shown(cx), (None, vec![], vec!["main#empty".into()]));
         run("space.next", serde_json::Value::Null, cx);
         assert_eq!(shown(cx), (Some("sp2".into()), vec!["t2".into()], vec![]));
+        run("space.deselect", serde_json::Value::Null, cx);
+        assert_eq!(shown(cx), (None, vec![], vec!["main#empty".into()]));
+        run("space.select", json!({ "id": "sp2" }), cx);
+        assert_eq!(shown(cx), (Some("sp2".into()), vec!["t2".into()], vec![]));
         // A layout without a page shows a space again.
         let active = cx.update(|window, cx| view.update(cx, |this, cx| {
             this.model.active = None;
@@ -5452,6 +5459,10 @@ mod tests {
             this.model.active.clone()
         }));
         assert_eq!(active.as_deref(), Some("sp2"));
+        // Without a page, it keeps the shown space.
+        run("space.select", json!({ "id": "sp3" }), cx);
+        run("space.deselect", serde_json::Value::Null, cx);
+        assert_eq!(shown(cx).0.as_deref(), Some("sp3"));
         cx.run_until_parked();
     }
 
