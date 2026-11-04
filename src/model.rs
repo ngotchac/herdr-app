@@ -86,6 +86,8 @@ pub struct Model {
     seq: u64,
     /// Where each terminal works now: its repo (worktrees included) and branch.
     pub folder_info: HashMap<String, FolderInfo>,
+    /// Closing the shown space selects none (the layout shows a page for that).
+    pub close_to_none: bool,
 }
 
 /// Herdr's attention priority: blocked > done > working > idle > nothing.
@@ -396,7 +398,7 @@ impl Model {
         self.recent.insert(0, Recent { name: p.name.clone(), folder: p.folder.clone() });
         self.recent.truncate(20);
         if was_active {
-            self.active = self.spaces.get(pi).or(self.spaces.last()).map(|p| p.id.clone());
+            self.active = if self.close_to_none { None } else { self.spaces.get(pi).or(self.spaces.last()).map(|p| p.id.clone()) };
         }
         p.tabs.iter().flat_map(|c| addresses(&c.root)).collect()
     }

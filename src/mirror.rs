@@ -208,7 +208,10 @@ impl View {
                 }
             }
         }
-        model.active = self.active.clone().filter(|id| model.space(id).is_some()).or_else(|| model.spaces.first().map(|s| s.id.clone()));
+        model.active = self.active.clone().filter(|id| model.space(id).is_some());
+        if model.active.is_none() && !model.close_to_none {
+            model.active = model.spaces.first().map(|s| s.id.clone());
+        }
         model.recent = self.recent.clone();
         for (a, s) in &self.attention {
             model.agents.entry(a.clone()).or_insert_with(|| Agent { word: s.word.clone(), seen: s.seen, ..Default::default() });
@@ -224,6 +227,17 @@ mod tests {
         let mut m = Model::default();
         m.add_space("s", "work", "/work", Tab::new("t", "task", "p", "t1"));
         m
+    }
+    #[test]
+    fn no_space_stays_selected_when_the_layout_has_an_empty_page() {
+        let mut m = model();
+        m.active = None;
+        m.close_to_none = true;
+        View::capture(&m).apply(&mut m);
+        assert_eq!(m.active, None);
+        m.close_to_none = false;
+        View::capture(&m).apply(&mut m);
+        assert_eq!(m.active.as_deref(), Some("s"));
     }
     #[test]
     fn focus_zoom_and_settle_are_private() {
