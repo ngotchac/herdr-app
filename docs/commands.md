@@ -181,6 +181,12 @@ Show a space (by position or id).
 | `index` | no |
 | `id` | no |
 
+## `space.deselect`
+
+Show the layout's `empty` page.
+
+No arguments.
+
 ## `space.next`
 
 Show the next space.
